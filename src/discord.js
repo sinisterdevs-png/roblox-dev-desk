@@ -239,13 +239,16 @@ export function startDiscord() {
       if (interaction.isButton() && interaction.customId === 'submission:next') {
         const flow = active.get(interaction.user.id); if (!flow) return interaction.reply({ ephemeral: true, content: 'Start again with `/submit`.' });
         const modal = new ModalBuilder().setCustomId(`answer:${interaction.user.id}`).setTitle('Product review question');
-        const product = db.product(flow.productId); const q = product.questions[flow.step];
+        const product = db.product(flow.productId); const q = product?.questions?.[flow.step];
+        if (!q) { active.delete(interaction.user.id); return interaction.reply({ ephemeral: true, content: 'This submission form is no longer available. Start again with `/submit`.' }); }
         const input = new TextInputBuilder().setCustomId('value').setLabel(q.label.slice(0, 45)).setStyle(q.long ? TextInputStyle.Paragraph : TextInputStyle.Short).setRequired(q.required !== false).setMaxLength(1000);
         modal.addComponents(new ActionRowBuilder().addComponents(input)); return interaction.showModal(modal);
       }
       if (interaction.isModalSubmit() && interaction.customId.startsWith('answer:')) {
         const flow = active.get(interaction.user.id); if (!flow) return interaction.reply({ ephemeral: true, content: 'This form expired. Start again with `/submit`.' });
-        const product = db.product(flow.productId); flow.answers[product.questions[flow.step].label] = interaction.fields.getTextInputValue('value'); flow.step++;
+        const product = db.product(flow.productId); const question = product?.questions?.[flow.step];
+        if (!question) { active.delete(interaction.user.id); return interaction.reply({ ephemeral: true, content: 'This submission form is no longer available. Start again with `/submit`.' }); }
+        flow.answers[question.label] = interaction.fields.getTextInputValue('value'); flow.step++;
         if (flow.step >= product.questions.length) return showFinalForm(interaction, flow, product);
         const embed = new EmbedBuilder().setColor(0x9a7bff).setTitle(`Question ${flow.step + 1} of ${product.questions.length}`).setDescription(product.questions[flow.step].label);
         return interaction.reply({ ephemeral: true, embeds: [embed], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('submission:next').setLabel('Answer').setStyle(ButtonStyle.Primary))] });
@@ -273,7 +276,8 @@ export function startDiscord() {
 }
 
 function showQuestion(interaction, flow, product) {
-  const q = product.questions[flow.step];
+  const q = product?.questions?.[flow.step];
+  if (!q) { active.delete(interaction.user.id); return interaction.reply({ ephemeral: true, content: 'This submission form is no longer available. Start again with `/submit`.' }); }
   return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle(`Question ${flow.step + 1} of ${product.questions.length}`).setDescription(q.label)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('submission:next').setLabel('Answer').setStyle(ButtonStyle.Primary))] });
 }
 function showFinalForm(interaction, flow, product) {
@@ -284,7 +288,7 @@ function showFinalForm(interaction, flow, product) {
     new ActionRowBuilder().addComponents(short('roblox', 'Roblox product URL')),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('What does it do? Who is it for?').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)),
     new ActionRowBuilder().addComponents(short('price', 'Price / revenue split', false)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('testing').setLabel('Testing notes + media URLs (screenshots/video)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000))
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('testing').setLabel('Testing notes and media links').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000))
   );
   return interaction.showModal(modal);
 }
