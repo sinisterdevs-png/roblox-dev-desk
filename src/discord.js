@@ -22,12 +22,36 @@ const productStatus = new SlashCommandBuilder().setName('product-status').setDes
   .addStringOption(o => o.setName('status').setDescription('New status').setRequired(true).addChoices({ name: 'Accepting submissions', value: 'published' }, { name: 'Draft', value: 'draft' }, { name: 'Archived', value: 'archived' }));
 const productList = new SlashCommandBuilder().setName('product-list').setDescription('List all review forms');
 const reviewQueue = new SlashCommandBuilder().setName('review').setDescription('Review pending developer submissions');
-export const commandDefinitions = [support, list, mine, submit, createProduct, productStatus, productList, reviewQueue].map(c => c.toJSON());
+const panel = new SlashCommandBuilder().setName('panel').setDescription('Open the interactive developer and owner panel');
+export const commandDefinitions = [support, list, mine, submit, createProduct, productStatus, productList, reviewQueue, panel].map(c => c.toJSON());
 
 export async function deployCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   const route = process.env.DISCORD_GUILD_ID ? Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, process.env.DISCORD_GUILD_ID) : Routes.applicationCommands(process.env.DISCORD_CLIENT_ID);
   await rest.put(route, { body: commandDefinitions });
+}
+
+
+function panelHome(userId) {
+  const rows = [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('panel:browse').setLabel('Browse products').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('panel:submit').setLabel('Start a submission').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('panel:mine').setLabel('My submissions').setStyle(ButtonStyle.Secondary)
+  )];
+  if (owners.has(userId)) rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('panel:manage').setLabel('Manage products').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('panel:create').setLabel('Create review form').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('panel:review').setLabel('Review queue').setStyle(ButtonStyle.Danger)
+  ));
+  return {
+    embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle('Roblox Dev Desk').setDescription(
+      'Choose an action below. Developers can browse review forms, submit a product, and check decisions here. Owners can create forms, manage their status, and review submissions.\n\nFor screenshots or direct video attachments, use the submit command; the panel submission flow accepts media links in its final form.'
+    )],
+    components: rows
+  };
+}
+function panelBackRow() {
+  return new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('panel:home').setLabel('Back to panel').setStyle(ButtonStyle.Secondary));
 }
 
 export function startDiscord() {
@@ -40,6 +64,7 @@ export function startDiscord() {
         return interaction.respond(available.filter(p => p.title.toLowerCase().includes(term)).slice(0, 25).map(p => ({ name: (p.title + ' · ' + (p.status || p.category)).slice(0, 100), value: p.id })));
       }
       if (interaction.isChatInputCommand()) {
+        if (interaction.commandName === 'panel') return interaction.reply({ ephemeral: true, ...panelHome(interaction.user.id) });
         if (interaction.commandName === 'products') {
           const products = db.products();
           return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle('Open product reviews').setDescription(products.length ? products.map(p => `**${p.title}** · ${p.category}\n${p.summary}`).join('\n\n').slice(0, 4000) : 'No products are accepting submissions right now.')] });
@@ -83,6 +108,81 @@ export function startDiscord() {
           return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle(`Submit: ${product.title}`).setDescription(`**Review criteria**\n${product.criteria.length ? product.criteria.map(x => `• ${x}`).join('\n') : 'Owners will assess quality, originality, polish, and community fit.'}\n\nAttach screenshots or a short video to this command. I’ll ask a few questions and collect product details next. By starting, you confirm you have the right to submit this work and its media.`)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('submission:start').setLabel('Agree & start').setStyle(ButtonStyle.Primary))] });
         }
       }
+
+      if (interaction.isButton() && interaction.customId.startsWith('panel:')) {
+        const action = interaction.customId.slice('panel:'.length);
+        if (action === 'home') return interaction.update(panelHome(interaction.user.id));
+        if (action === 'browse' || action === 'submit') {
+          const items = db.products().filter(p => p.status === 'published').slice(0, 25);
+          if (!items.length) return interaction.update({ content: 'There are no open review forms yet.', embeds: [], components: [panelBackRow()] });
+          const menu = new StringSelectMenuBuilder().setCustomId('panel:product').setPlaceholder('Choose a product review').addOptions(items.map(p => ({ label: p.title.slice(0, 100), description: (p.category + ' · ' + p.summary).slice(0, 100), value: p.id })));
+          return interaction.update({ content: 'Choose a review form. You can attach screenshots or videos later with the submit command.', embeds: [], components: [new ActionRowBuilder().addComponents(menu), panelBackRow()] });
+        }
+        if (action === 'mine') {
+          const items = db.all().submissions.filter(x => x.userId === interaction.user.id).slice(0, 10);
+          const text = items.length ? items.map(x => '**' + x.title + '** — ' + x.status + (x.decisionNote ? '\n> ' + x.decisionNote : '')).join('\n\n').slice(0, 3900) : 'You have not submitted a product yet.';
+          return interaction.update({ embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle('My submissions').setDescription(text)], components: [panelBackRow()] });
+        }
+        if (action === 'manage' || action === 'create' || action === 'review') {
+          if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This panel is for bot owners only.' });
+          if (action === 'create') {
+            const modal = new ModalBuilder().setCustomId('panel:create-product').setTitle('Create a review form');
+            modal.addComponents(
+              new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('Product or review name').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80)),
+              new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('category').setLabel('Category').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40)),
+              new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('summary').setLabel('Submission instructions').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(300)),
+              new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('questions').setLabel('Optional questions, one per line').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(250)),
+              new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('criteria').setLabel('Optional review criteria, one per line').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000))
+            );
+            return interaction.showModal(modal);
+          }
+          if (action === 'manage') {
+            const items = db.products(true).slice(0, 25);
+            if (!items.length) return interaction.update({ content: 'No review forms yet. Use Create review form to add one.', embeds: [], components: [panelBackRow()] });
+            const menu = new StringSelectMenuBuilder().setCustomId('panel:manage-product').setPlaceholder('Choose a review form').addOptions(items.map(p => ({ label: p.title.slice(0, 100), description: (p.category + ' · ' + p.status).slice(0, 100), value: p.id })));
+            return interaction.update({ content: 'Choose a form to open, pause, or archive.', embeds: [], components: [new ActionRowBuilder().addComponents(menu), panelBackRow()] });
+          }
+          const items = db.all().submissions.filter(x => ['pending', 'in_review', 'changes_requested'].includes(x.status)).slice(0, 25);
+          if (!items.length) return interaction.update({ content: 'There are no submissions waiting for review.', embeds: [], components: [panelBackRow()] });
+          const menu = new StringSelectMenuBuilder().setCustomId('review:select').setPlaceholder('Choose a submission').addOptions(items.map(x => ({ label: x.title.slice(0, 100), description: (x.productTitle + ' · ' + x.username + ' · ' + x.status).slice(0, 100), value: x.id })));
+          return interaction.update({ content: 'Choose a submission to review.', embeds: [], components: [new ActionRowBuilder().addComponents(menu), panelBackRow()] });
+        }
+        if (action.startsWith('submit:')) {
+          const item = db.product(action.slice('submit:'.length));
+          if (!item || item.status !== 'published') return interaction.update({ content: 'That review form is closed.', embeds: [], components: [panelBackRow()] });
+          active.set(interaction.user.id, { productId: item.id, step: 0, answers: {}, attachments: [] });
+          const criteria = item.criteria?.length ? item.criteria.map(x => '• ' + x).join('\n') : 'Owners will assess quality, originality, polish, and community fit.';
+          return interaction.update({ content: '', embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle('Submit: ' + item.title).setDescription('**Review criteria**\n' + criteria + '\n\nBy starting, you confirm you have the right to submit this work and its media. Add screenshots or videos as links in the final form, or use the submit command to attach files.')], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('submission:start').setLabel('Agree & start').setStyle(ButtonStyle.Primary)), panelBackRow()] });
+        }
+        if (action.startsWith('status:')) {
+          if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This action is for bot owners only.' });
+          const parts = action.split(':');
+          const status = parts[1];
+          const id = parts.slice(2).join(':');
+          const item = db.product(id);
+          if (!item) return interaction.update({ content: 'Review form not found.', embeds: [], components: [panelBackRow()] });
+          db.upsertProduct({ ...item, status });
+          return interaction.update({ content: '**' + item.title + '** is now **' + status + '**.', embeds: [], components: [panelBackRow()] });
+        }
+      }
+      if (interaction.isStringSelectMenu() && interaction.customId === 'panel:product') {
+        const item = db.product(interaction.values[0]);
+        if (!item || item.status !== 'published') return interaction.update({ content: 'That review form is closed.', embeds: [], components: [panelBackRow()] });
+        const embed = new EmbedBuilder().setColor(0x9a7bff).setTitle(item.title).setDescription((item.summary || 'Open for submissions.') + '\n\n**Category:** ' + item.category + (item.criteria?.length ? '\n\n**Review criteria**\n' + item.criteria.map(x => '• ' + x).join('\n') : ''));
+        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('panel:submit:' + item.id).setLabel('Start submission').setStyle(ButtonStyle.Success));
+        return interaction.update({ content: '', embeds: [embed], components: [row, panelBackRow()] });
+      }
+      if (interaction.isStringSelectMenu() && interaction.customId === 'panel:manage-product') {
+        if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This action is for bot owners only.' });
+        const item = db.product(interaction.values[0]);
+        if (!item) return interaction.update({ content: 'Review form not found.', embeds: [], components: [panelBackRow()] });
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('panel:status:published:' + item.id).setLabel('Open').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('panel:status:draft:' + item.id).setLabel('Pause').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel:status:archived:' + item.id).setLabel('Archive').setStyle(ButtonStyle.Danger)
+        );
+        return interaction.update({ content: '**' + item.title + '** · ' + item.category + ' · currently **' + item.status + '**', embeds: [], components: [row, panelBackRow()] });
+      }
       if (interaction.isStringSelectMenu() && interaction.customId === 'review:select') {
         if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This action is for bot owners only.' });
         const item = db.submission(interaction.values[0]);
@@ -110,6 +210,13 @@ export function startDiscord() {
         const modal = new ModalBuilder().setCustomId('review-note:' + status + ':' + id).setTitle(action === 'reject' ? 'Reject submission' : 'Request changes');
         modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('note').setLabel('Message to developer').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)));
         return interaction.showModal(modal);
+      }
+      if (interaction.isModalSubmit() && interaction.customId === 'panel:create-product') {
+        if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This action is for bot owners only.' });
+        const questions = interaction.fields.getTextInputValue('questions').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 5).map(label => ({ label: label.slice(0, 45), long: true, required: true }));
+        const criteria = interaction.fields.getTextInputValue('criteria').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 12).map(x => x.slice(0, 140));
+        const item = db.upsertProduct({ title: interaction.fields.getTextInputValue('name').trim(), category: interaction.fields.getTextInputValue('category').trim(), summary: interaction.fields.getTextInputValue('summary').trim(), questions, criteria, status: 'published' });
+        return interaction.reply({ ephemeral: true, content: 'Created and published **' + item.title + '**. Developers can now find it in the panel.' });
       }
       if (interaction.isModalSubmit() && interaction.customId.startsWith('review-note:')) {
         if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This action is for bot owners only.' });
