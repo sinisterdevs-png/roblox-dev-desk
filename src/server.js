@@ -8,10 +8,10 @@ import { rateLimit } from 'express-rate-limit';
 import { db } from './store.js';
 import { startDiscord, sendDecision } from './discord.js';
 
-const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'DASHBOARD_USER', 'DASHBOARD_PASSWORD', 'SESSION_SECRET', 'OWNER_IDS'];
+const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'DASHBOARD_USER', 'DASHBOARD_PASSWORD', 'OWNER_IDS'];
 const missing = required.filter(k => !process.env[k]);
 if (missing.length) throw new Error(`Missing required .env settings: ${missing.join(', ')}`);
-if (process.env.DASHBOARD_PASSWORD.length < 16 || process.env.SESSION_SECRET.length < 32) throw new Error('Use a dashboard password of at least 16 characters and SESSION_SECRET of at least 32 characters.');
+if (process.env.DASHBOARD_PASSWORD.length < 16) throw new Error('Use a dashboard password of at least 16 characters.');
 const app = express();
 const client = startDiscord();
 const staticDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');

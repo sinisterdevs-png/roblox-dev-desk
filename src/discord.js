@@ -32,7 +32,7 @@ export function startDiscord() {
           const products = db.products();
           return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle('Open product reviews').setDescription(products.length ? products.map(p => `**${p.title}** · ${p.category}\n${p.summary}`).join('\n\n').slice(0, 4000) : 'No products are accepting submissions right now.')] });
         }
-        if (interaction.commandName === 'help') return interaction.reply({ ephemeral: true, content: '**Roblox Dev Desk**\n`/products` browse open reviews · `/submit` send a product for review · `/mysubmissions` check decisions. Attach screenshots in the submission form and include video links, your Roblox product link, pricing and test notes. Owners can request changes or approve in the dashboard.' });
+        if (interaction.commandName === 'help') return interaction.reply({ ephemeral: true, content: '**Roblox Dev Desk**\n`/products` browse open reviews · `/submit` start a review · `/mysubmissions` check decisions. Add screenshots/video files to the `/submit` command, then include your Roblox link, product details, price, testing notes, and any demo/video URLs. Owners review in the dashboard and can approve, reject, or request changes.' });
         if (interaction.commandName === 'mysubmissions') {
           const mine = db.all().submissions.filter(s => s.userId === interaction.user.id);
           return interaction.reply({ ephemeral: true, content: mine.length ? mine.slice(0, 10).map(s => `**${s.title}** — ${s.status}${s.decisionNote ? `\n> ${s.decisionNote}` : ''}`).join('\n\n') : 'You have not submitted a product yet. Use `/submit` to get started.' });

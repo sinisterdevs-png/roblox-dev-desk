@@ -10,13 +10,13 @@ A Discord bot plus owner dashboard for Roblox creator communities. Developers su
 - Review queue: search/filter submissions, open full details and attachments, assign a reviewer, add private notes, request changes, approve, or reject.
 - Decision DMs and configurable Discord submission/review-log channels.
 - JSON persistence for a small community starter. Keep `data/store.json` backed up; for a larger community migrate `src/store.js` to Postgres.
-- Dashboard authentication, secure headers, rate limits, CSRF checks, role-gated owner actions, and no public bot-token exposure.
+- Owner-password-protected dashboard, secure headers, rate limits, same-origin mutation checks, and no public bot-token exposure.
 
 ## Run it
 
 1. Install Node.js 20 or newer.
 2. Create a Discord application and bot in the [Discord Developer Portal](https://discord.com/developers/applications). Copy the bot token and application ID into `.env`. Invite it with `bot` and `applications.commands` scopes and permission to send messages, embeds, and DMs.
-3. Copy `.env.example` to `.env`. Set a long dashboard password and session secret. Add your Discord user ID(s) to `OWNER_IDS`, comma separated. `DISCORD_GUILD_ID` is recommended for fast command updates while developing.
+3. Copy `.env.example` to `.env`. Set a long dashboard password. Add your Discord user ID(s) to `OWNER_IDS`, comma separated. `DISCORD_GUILD_ID` is recommended for fast command updates while developing.
 4. Install dependencies locally and deploy the slash commands once (guild commands appear faster than global ones):
 
    ```powershell
