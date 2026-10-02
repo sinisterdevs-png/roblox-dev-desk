@@ -11,7 +11,18 @@ const submit = new SlashCommandBuilder().setName('submit').setDescription('Submi
   .addAttachmentOption(o => o.setName('screenshot1').setDescription('Attach a product screenshot').setRequired(false))
   .addAttachmentOption(o => o.setName('screenshot2').setDescription('Attach another screenshot').setRequired(false))
   .addAttachmentOption(o => o.setName('video').setDescription('Attach a short product video').setRequired(false));
-export const commandDefinitions = [support, list, mine, submit].map(c => c.toJSON());
+const createProduct = new SlashCommandBuilder().setName('product-create').setDescription('Create a product review form')
+  .addStringOption(o => o.setName('name').setDescription('Product name').setRequired(true).setMaxLength(80))
+  .addStringOption(o => o.setName('category').setDescription('Category').setRequired(true).setMaxLength(40))
+  .addStringOption(o => o.setName('summary').setDescription('Submission instructions').setRequired(true).setMaxLength(300))
+  .addStringOption(o => o.setName('questions').setDescription('Optional questions, one per line (max 5)').setRequired(false).setMaxLength(250))
+  .addStringOption(o => o.setName('criteria').setDescription('Optional review criteria, one per line').setRequired(false).setMaxLength(1000));
+const productStatus = new SlashCommandBuilder().setName('product-status').setDescription('Open, pause, or archive a review form')
+  .addStringOption(o => o.setName('product').setDescription('Review form').setRequired(true).setAutocomplete(true))
+  .addStringOption(o => o.setName('status').setDescription('New status').setRequired(true).addChoices({ name: 'Accepting submissions', value: 'published' }, { name: 'Draft', value: 'draft' }, { name: 'Archived', value: 'archived' }));
+const productList = new SlashCommandBuilder().setName('product-list').setDescription('List all review forms');
+const reviewQueue = new SlashCommandBuilder().setName('review').setDescription('Review pending developer submissions');
+export const commandDefinitions = [support, list, mine, submit, createProduct, productStatus, productList, reviewQueue].map(c => c.toJSON());
 
 export async function deployCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -25,17 +36,45 @@ export function startDiscord() {
     try {
       if (interaction.isAutocomplete()) {
         const term = interaction.options.getFocused().toLowerCase();
-        return interaction.respond(db.products().filter(p => p.title.toLowerCase().includes(term)).slice(0, 25).map(p => ({ name: `${p.title} · ${p.category}`.slice(0, 100), value: p.id })));
+        const available = interaction.commandName === 'product-status' ? db.products(true) : db.products();
+        return interaction.respond(available.filter(p => p.title.toLowerCase().includes(term)).slice(0, 25).map(p => ({ name: (p.title + ' · ' + (p.status || p.category)).slice(0, 100), value: p.id })));
       }
       if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'products') {
           const products = db.products();
           return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle('Open product reviews').setDescription(products.length ? products.map(p => `**${p.title}** · ${p.category}\n${p.summary}`).join('\n\n').slice(0, 4000) : 'No products are accepting submissions right now.')] });
         }
-        if (interaction.commandName === 'help') return interaction.reply({ ephemeral: true, content: '**Roblox Dev Desk**\n`/products` browse open reviews · `/submit` start a review · `/mysubmissions` check decisions. Add screenshots/video files to the `/submit` command, then include your Roblox link, product details, price, testing notes, and any demo/video URLs. Owners review in the dashboard and can approve, reject, or request changes.' });
+        if (interaction.commandName === 'help') return interaction.reply({ ephemeral: true, content: '**Roblox Dev Desk**\nDeveloper commands: /products, /submit, /mysubmissions. Owner commands: /product-create, /product-list, /product-status, /review. Manage forms and submission decisions in Discord.' });
         if (interaction.commandName === 'mysubmissions') {
           const mine = db.all().submissions.filter(s => s.userId === interaction.user.id);
           return interaction.reply({ ephemeral: true, content: mine.length ? mine.slice(0, 10).map(s => `**${s.title}** — ${s.status}${s.decisionNote ? `\n> ${s.decisionNote}` : ''}`).join('\n\n') : 'You have not submitted a product yet. Use `/submit` to get started.' });
+        }
+        if (interaction.commandName === 'product-create') {
+          if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This command is for bot owners only.' });
+          const questions = (interaction.options.getString('questions') || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 5).map(label => ({ label: label.slice(0, 45), long: true, required: true }));
+          const criteria = (interaction.options.getString('criteria') || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 12).map(x => x.slice(0, 140));
+          const product = db.upsertProduct({ title: interaction.options.getString('name', true).trim(), category: interaction.options.getString('category', true).trim(), summary: interaction.options.getString('summary', true).trim(), questions, criteria, status: 'published' });
+          return interaction.reply({ ephemeral: true, content: 'Created and opened **' + product.title + '**. Developers can now use /products and /submit.' });
+        }
+        if (interaction.commandName === 'product-list') {
+          if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This command is for bot owners only.' });
+          const items = db.products(true);
+          return interaction.reply({ ephemeral: true, content: items.length ? items.slice(0, 20).map(p => '**' + p.title + '** · ' + p.status + ' · ' + p.category + ' · ID ' + p.id).join('\n') : 'No review forms yet. Create one with /product-create.' });
+        }
+        if (interaction.commandName === 'product-status') {
+          if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This command is for bot owners only.' });
+          const product = db.product(interaction.options.getString('product', true));
+          if (!product) return interaction.reply({ ephemeral: true, content: 'Review form not found. Run /product-list and try again.' });
+          const status = interaction.options.getString('status', true);
+          db.upsertProduct({ ...product, status });
+          return interaction.reply({ ephemeral: true, content: '**' + product.title + '** is now **' + status + '**.' });
+        }
+        if (interaction.commandName === 'review') {
+          if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This command is for bot owners only.' });
+          const items = db.all().submissions.filter(s => ['pending', 'in_review', 'changes_requested'].includes(s.status)).slice(0, 25);
+          if (!items.length) return interaction.reply({ ephemeral: true, content: 'There are no submissions waiting for review.' });
+          const menu = new StringSelectMenuBuilder().setCustomId('review:select').setPlaceholder('Choose a submission').addOptions(items.map(s => ({ label: s.title.slice(0, 100), description: (s.productTitle + ' · ' + s.username + ' · ' + s.status).slice(0, 100), value: s.id })));
+          return interaction.reply({ ephemeral: true, content: 'Select a submission to review. You can approve, reject, or request changes.', components: [new ActionRowBuilder().addComponents(menu)] });
         }
         if (interaction.commandName === 'submit') {
           const product = db.product(interaction.options.getString('product'));
@@ -43,6 +82,46 @@ export function startDiscord() {
           active.set(interaction.user.id, { productId: product.id, step: 0, answers: {}, attachments: ['screenshot1', 'screenshot2', 'video'].map(name => interaction.options.getAttachment(name)).filter(Boolean).map(a => ({ url: a.url, name: a.name, contentType: a.contentType })) });
           return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x9a7bff).setTitle(`Submit: ${product.title}`).setDescription(`**Review criteria**\n${product.criteria.length ? product.criteria.map(x => `• ${x}`).join('\n') : 'Owners will assess quality, originality, polish, and community fit.'}\n\nAttach screenshots or a short video to this command. I’ll ask a few questions and collect product details next. By starting, you confirm you have the right to submit this work and its media.`)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('submission:start').setLabel('Agree & start').setStyle(ButtonStyle.Primary))] });
         }
+      }
+      if (interaction.isStringSelectMenu() && interaction.customId === 'review:select') {
+        if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This action is for bot owners only.' });
+        const item = db.submission(interaction.values[0]);
+        if (!item) return interaction.update({ content: 'Submission not found.', embeds: [], components: [] });
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('review:approve:' + item.id).setLabel('Approve').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('review:changes:' + item.id).setLabel('Request changes').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('review:reject:' + item.id).setLabel('Reject').setStyle(ButtonStyle.Danger)
+        );
+        return interaction.update({ content: 'Submission review', embeds: [submissionEmbed(item)], components: [row] });
+      }
+      if (interaction.isButton() && interaction.customId.startsWith('review:')) {
+        if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This action is for bot owners only.' });
+        const parts = interaction.customId.split(':');
+        const action = parts[1];
+        const id = parts.slice(2).join(':');
+        const item = db.submission(id);
+        if (!item) return interaction.reply({ ephemeral: true, content: 'Submission not found.' });
+        if (action === 'approve') {
+          const updated = db.updateSubmission(id, { status: 'approved', reviewerId: interaction.user.id, decisionNote: '' });
+          await sendDecision(client, updated, interaction.user.id, '');
+          return interaction.update({ content: 'Approved **' + item.title + '** and notified the developer.', embeds: [], components: [] });
+        }
+        const status = action === 'reject' ? 'rejected' : 'changes_requested';
+        const modal = new ModalBuilder().setCustomId('review-note:' + status + ':' + id).setTitle(action === 'reject' ? 'Reject submission' : 'Request changes');
+        modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('note').setLabel('Message to developer').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)));
+        return interaction.showModal(modal);
+      }
+      if (interaction.isModalSubmit() && interaction.customId.startsWith('review-note:')) {
+        if (!owners.has(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'This action is for bot owners only.' });
+        const parts = interaction.customId.split(':');
+        const status = parts[1];
+        const id = parts.slice(2).join(':');
+        const item = db.submission(id);
+        if (!item) return interaction.reply({ ephemeral: true, content: 'Submission not found.' });
+        const note = interaction.fields.getTextInputValue('note');
+        const updated = db.updateSubmission(id, { status, reviewerId: interaction.user.id, decisionNote: note });
+        await sendDecision(client, updated, interaction.user.id, note);
+        return interaction.reply({ ephemeral: true, content: 'Sent ' + status.replace('_', ' ') + ' to ' + updated.title + ' and notified the developer.' });
       }
       if (interaction.isButton() && interaction.customId === 'submission:start') {
         const flow = active.get(interaction.user.id); if (!flow) return interaction.reply({ ephemeral: true, content: 'Start again with `/submit`.' });
@@ -77,7 +156,11 @@ export function startDiscord() {
       }
     } catch (error) { console.error('Discord interaction error:', error); if (!interaction.replied && !interaction.deferred) await interaction.reply({ ephemeral: true, content: 'Something went wrong. Please try again or contact an owner.' }).catch(() => {}); }
   });
-  client.once('ready', () => console.log(`Discord connected as ${client.user.tag}`));
+  client.once('ready', async () => {
+    console.log(`Discord connected as ${client.user.tag}`);
+    try { await deployCommands(); console.log('Discord slash commands deployed.'); }
+    catch (error) { console.error('Could not deploy slash commands:', error); }
+  });
   client.login(process.env.DISCORD_TOKEN);
   return client;
 }
@@ -99,7 +182,22 @@ function showFinalForm(interaction, flow, product) {
   return interaction.showModal(modal);
 }
 export function submissionEmbed(s) {
-  return new EmbedBuilder().setColor(0xffc857).setTitle(`New submission · ${s.title}`).setDescription(s.description.slice(0, 800)).addFields({ name: 'Developer', value: `<@${s.userId}>`, inline: true }, { name: 'Product', value: s.productTitle, inline: true }, { name: 'Status', value: s.status, inline: true }, { name: 'Roblox link', value: s.robloxUrl || 'Not provided' });
+  const answers = Object.entries(s.answers ?? {}).map(([key, value]) => '**' + key + '**\n' + value).join('\n\n');
+  const files = (s.attachments ?? []).map(a => '[' + (a.name || 'Attachment') + '](' + a.url + ')').join('\n');
+  const details = [
+    '**Description**\n' + (s.description || 'Not provided'),
+    '**Price / split**\n' + (s.price || 'Not specified'),
+    '**Testing notes**\n' + (s.testNotes || 'None'),
+    answers ? '**Product questions**\n' + answers : '',
+    files ? '**Screenshots and videos**\n' + files : ''
+  ].filter(Boolean).join('\n\n').slice(0, 4000);
+  return new EmbedBuilder().setColor(0xffc857).setTitle('Submission · ' + String(s.title || 'Untitled').slice(0, 240)).setDescription(details)
+    .addFields(
+      { name: 'Developer', value: '<@' + s.userId + '>', inline: true },
+      { name: 'Product', value: String(s.productTitle || 'Unknown').slice(0, 100), inline: true },
+      { name: 'Status', value: s.status, inline: true },
+      { name: 'Roblox link', value: String(s.robloxUrl || 'Not provided').slice(0, 1024) }
+    );
 }
 export async function sendDecision(client, submission, actor, note) {
   const user = await client.users.fetch(submission.userId).catch(() => null);
